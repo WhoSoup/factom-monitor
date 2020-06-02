@@ -9,6 +9,7 @@ import (
 )
 
 var Interval time.Duration = time.Second
+var Timeout time.Duration = time.Second * 5
 
 type Monitor struct {
 	url    string
@@ -17,15 +18,13 @@ type Monitor struct {
 	height int64
 	minute int64
 
-	listenerMtx sync.Mutex
-	listeners   []chan Event
+	listener chan Event
 
 	close  chan interface{}
 	closer sync.Once
 }
 
 type Event struct {
-	Err          error
 	DBHeight     int64
 	LeaderHeight int64
 	Minute       int64
@@ -44,88 +43,77 @@ func NewMonitor(url string) (*Monitor, error) {
 		return nil, err
 	}
 
-	m.height = response.DBHeight
+	m.height = response.LeaderHeight
 	m.minute = response.Minute
 
 	m.close = make(chan interface{})
+	m.listener = make(chan Event, 10)
 
 	go m.run(response)
 	return m, nil
 }
 
-func (m *Monitor) NewListener() <-chan Event {
-	m.listenerMtx.Lock()
-	defer m.listenerMtx.Unlock()
-	l := make(chan Event, 20)
-	m.listeners = append(m.listeners, l)
-	return l
+func (m *Monitor) Listener() <-chan Event {
+	return m.listener
 }
 
 func (m *Monitor) run(resp *MinuteResponse) {
-	for resp != nil {
-		// wait for next minute
-		defMinute := time.Duration(resp.DBlockSeconds) * time.Second / 10
-		minuteStart := time.Unix(resp.MinuteStartTime, 0)
-		serverTime := time.Unix(resp.Time, 0)
+	minute := time.Duration(resp.DBlockSeconds) * time.Second / 10
+	ticker := time.NewTicker(Interval)
+	last := time.Now()
 
-		wait := serverTime.Add(defMinute).Sub(minuteStart)
+	for {
 		select {
 		case <-m.close:
 			return
-		case <-time.After(wait):
+		case <-ticker.C:
 		}
 
-		if resp = m.pollLoop(); resp != nil {
-			m.notify(resp)
+		ctx, cancel := context.WithTimeout(context.Background(), Timeout)
+		resp, err := m.CurrentMinute(ctx)
+		if err != nil {
+			cancel()
+			continue
+		}
+		cancel()
+
+		if m.newHeight(resp) {
+			diff := minute - time.Since(last)
+			if diff < 0 {
+				diff = -diff
+			}
+			last = time.Now()
+			if diff < Interval {
+				select {
+				case <-m.close:
+					return
+				case <-time.After(minute - Interval):
+				}
+			}
 		}
 	}
 }
 
-func (m *Monitor) send(event Event) {
-	m.listenerMtx.Lock()
-	defer m.listenerMtx.Lock()
-	for _, l := range m.listeners {
-		select {
-		case l <- event:
-		default: // nobody is reading
-		}
+func (m *Monitor) newHeight(resp *MinuteResponse) bool {
+	resp.Minute %= 10
+	if resp.LeaderHeight > m.height || (resp.LeaderHeight == m.height && resp.Minute > m.minute) {
+		m.height = resp.LeaderHeight
+		m.minute = resp.Minute
+		m.notify(resp)
+		return true
 	}
+	return false
 }
+
 func (m *Monitor) notify(resp *MinuteResponse) {
 	var e Event
 	e.DBHeight = resp.DBHeight
+	e.LeaderHeight = resp.LeaderHeight
 	e.Minute = resp.Minute
-	m.send(e)
-}
-
-func (m *Monitor) notifyErr(err error) {
-
-}
-
-func (m *Monitor) pollLoop() *MinuteResponse {
-	for {
-		resp := m.poll()
-		if resp != nil {
-			return resp
-		}
-
-		select {
-		case <-m.close:
-			return nil
-		case <-time.After(Interval):
-		}
+	select {
+	case m.listener <- e:
+	default: // nobody is reading
 	}
-}
-
-func (m *Monitor) poll() *MinuteResponse {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	res, err := m.CurrentMinute(ctx)
-	if err != nil {
-		m.notifyErr(err)
-		return nil
-	}
-	return res
 }
 
 func (m *Monitor) CurrentMinute(ctx context.Context) (*MinuteResponse, error) {
