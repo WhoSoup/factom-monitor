@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/AdamSLevy/jsonrpc2"
+	"github.com/AdamSLevy/jsonrpc2/v14"
 )
 
 var Interval time.Duration = time.Second
@@ -15,19 +15,23 @@ type Monitor struct {
 	url    string
 	client *jsonrpc2.Client
 
-	height int64
-	minute int64
+	heightMtx sync.Mutex
+	height    int64
+	minute    int64
 
-	listener chan Event
+	listenerMtx     sync.Mutex
+	minuteListeners []chan Event
+	heightListeners []chan int64
+	errorListeners  []chan error
 
 	close  chan interface{}
 	closer sync.Once
 }
 
 type Event struct {
-	DBHeight     int64
-	LeaderHeight int64
-	Minute       int64
+	DBHeight int64
+	Height   int64
+	Minute   int64
 }
 
 func NewMonitor(url string) (*Monitor, error) {
@@ -38,7 +42,7 @@ func NewMonitor(url string) (*Monitor, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	response, err := m.CurrentMinute(ctx)
+	response, err := m.FactomdRequest(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -47,14 +51,39 @@ func NewMonitor(url string) (*Monitor, error) {
 	m.minute = response.Minute
 
 	m.close = make(chan interface{})
-	m.listener = make(chan Event, 10)
 
 	go m.run(response)
 	return m, nil
 }
 
-func (m *Monitor) Listener() <-chan Event {
-	return m.listener
+func (m *Monitor) GetCurrentMinute() (int64, int64) {
+	m.heightMtx.Lock()
+	defer m.heightMtx.Unlock()
+	return m.height, m.minute
+}
+
+func (m *Monitor) NewMinuteListener() <-chan Event {
+	m.listenerMtx.Lock()
+	defer m.listenerMtx.Unlock()
+	l := make(chan Event, 25)
+	m.minuteListeners = append(m.minuteListeners, l)
+	return l
+}
+
+func (m *Monitor) NewHeightListener() <-chan int64 {
+	m.listenerMtx.Lock()
+	defer m.listenerMtx.Unlock()
+	l := make(chan int64, 6)
+	m.heightListeners = append(m.heightListeners, l)
+	return l
+}
+
+func (m *Monitor) NewErrorListener() <-chan error {
+	m.listenerMtx.Lock()
+	defer m.listenerMtx.Unlock()
+	l := make(chan error, 6)
+	m.errorListeners = append(m.errorListeners, l)
+	return l
 }
 
 func (m *Monitor) run(resp *MinuteResponse) {
@@ -70,8 +99,9 @@ func (m *Monitor) run(resp *MinuteResponse) {
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), Timeout)
-		resp, err := m.CurrentMinute(ctx)
+		resp, err := m.FactomdRequest(ctx)
 		if err != nil {
+			m.notifyError(err)
 			cancel()
 			continue
 		}
@@ -97,26 +127,56 @@ func (m *Monitor) run(resp *MinuteResponse) {
 func (m *Monitor) newHeight(resp *MinuteResponse) bool {
 	resp.Minute %= 10
 	if resp.LeaderHeight > m.height || (resp.LeaderHeight == m.height && resp.Minute > m.minute) {
+		newHeight := resp.LeaderHeight > m.height
+		m.heightMtx.Lock()
 		m.height = resp.LeaderHeight
 		m.minute = resp.Minute
-		m.notify(resp)
+		m.heightMtx.Unlock()
+
+		var e Event
+		e.DBHeight = resp.DBHeight
+		e.Height = resp.LeaderHeight
+		e.Minute = resp.Minute
+
+		m.notify(e, newHeight)
 		return true
 	}
 	return false
 }
 
-func (m *Monitor) notify(resp *MinuteResponse) {
-	var e Event
-	e.DBHeight = resp.DBHeight
-	e.LeaderHeight = resp.LeaderHeight
-	e.Minute = resp.Minute
-	select {
-	case m.listener <- e:
-	default: // nobody is reading
+func (m *Monitor) notify(e Event, height bool) {
+	m.listenerMtx.Lock()
+	defer m.listenerMtx.Unlock()
+
+	if height {
+		for _, l := range m.heightListeners {
+			select {
+			case l <- e.Height:
+			default:
+			}
+		}
+	}
+
+	for _, l := range m.minuteListeners {
+		select {
+		case l <- e:
+		default:
+		}
 	}
 }
 
-func (m *Monitor) CurrentMinute(ctx context.Context) (*MinuteResponse, error) {
+func (m *Monitor) notifyError(err error) {
+	m.listenerMtx.Lock()
+	defer m.listenerMtx.Unlock()
+	for _, l := range m.errorListeners {
+		select {
+		case l <- err:
+		default:
+		}
+	}
+}
+
+func (m *Monitor) FactomdRequest(ctx context.Context) (*MinuteResponse, error) {
 	res := new(MinuteResponse)
 	if err := m.client.Request(ctx, m.url, "current-minute", nil, res); err != nil {
 		return nil, err
