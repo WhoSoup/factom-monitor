@@ -8,9 +8,13 @@ import (
 	"github.com/AdamSLevy/jsonrpc2/v14"
 )
 
+// Interval specifies the minimum time spent between API requests
 var Interval time.Duration = time.Second
-var Timeout time.Duration = time.Second * 5
 
+// Timeout specifies the maximum time an API request can take
+var Timeout time.Duration = time.Second
+
+// Monitor is responsible for polling the factom node and managing listeners
 type Monitor struct {
 	url    string
 	client *jsonrpc2.Client
@@ -28,19 +32,26 @@ type Monitor struct {
 	closer sync.Once
 }
 
+// Event contains the data sent to minute listeners.
 type Event struct {
+	// The most recent block saved in the node's database
 	DBHeight int64
-	Height   int64
-	Minute   int64
+	// The most recently completed block in the network
+	Height int64
+	// The minute the network is currently working on
+	Minute int64
 }
 
+// NewMonitor creates a new monitor that begins polling the provided url immediately.
+// If the initial request does not work, an error is returned.
+// Starts a goroutine that can be stopped via monitor.Stop().
 func NewMonitor(url string) (*Monitor, error) {
 	m := new(Monitor)
 	m.url = url
 
 	m.client = new(jsonrpc2.Client)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 	defer cancel()
 	response, err := m.FactomdRequest(ctx)
 	if err != nil {
@@ -56,12 +67,15 @@ func NewMonitor(url string) (*Monitor, error) {
 	return m, nil
 }
 
+// GetCurrentMinute returns the most recent Height and Minute the monitor has received
 func (m *Monitor) GetCurrentMinute() (int64, int64) {
 	m.heightMtx.Lock()
 	defer m.heightMtx.Unlock()
 	return m.height, m.minute
 }
 
+// NewMinuteListener spawns a new listener that receives events for every minute.
+// Each reader must have its own listener.
 func (m *Monitor) NewMinuteListener() <-chan Event {
 	m.listenerMtx.Lock()
 	defer m.listenerMtx.Unlock()
@@ -70,6 +84,8 @@ func (m *Monitor) NewMinuteListener() <-chan Event {
 	return l
 }
 
+// NewHeightListener spawns a new listener that receives events every time a new height is attained.
+// Each reader must have its own listener.
 func (m *Monitor) NewHeightListener() <-chan int64 {
 	m.listenerMtx.Lock()
 	defer m.listenerMtx.Unlock()
@@ -78,6 +94,10 @@ func (m *Monitor) NewHeightListener() <-chan int64 {
 	return l
 }
 
+// NewErrorListener spawns a new listener that receives error events from malfunctioning API requests.
+// Single errors are usually recoverable and the monitor will continue to poll.
+// A high frequency of errors means the monitor is unable to reach the node.
+// Each reader must have its own listener.
 func (m *Monitor) NewErrorListener() <-chan error {
 	m.listenerMtx.Lock()
 	defer m.listenerMtx.Unlock()
@@ -107,9 +127,9 @@ func (m *Monitor) run(resp *MinuteResponse) {
 		}
 		cancel()
 
-		if m.newHeight(resp) {
+		if m.newHeight(resp) { // sends out event
 			diff := minute - time.Since(last)
-			if diff < 0 {
+			if diff < 0 { // absolute value
 				diff = -diff
 			}
 			last = time.Now()
@@ -117,14 +137,17 @@ func (m *Monitor) run(resp *MinuteResponse) {
 				select {
 				case <-m.close:
 					return
-				case <-time.After(minute - Interval):
+				case <-time.After(minute - Interval): // return a little early
 				}
 			}
 		}
 	}
 }
 
+// returns true if a new height was reached and sends out event
 func (m *Monitor) newHeight(resp *MinuteResponse) bool {
+	// occasionally the node will return a minute 10 event but that's just an internal state, not a real minute
+	// height n minute 10 will be treated as height n minute 0, ie outdated
 	resp.Minute %= 10
 	if resp.LeaderHeight > m.height || (resp.LeaderHeight == m.height && resp.Minute > m.minute) {
 		newHeight := resp.LeaderHeight > m.height
@@ -144,6 +167,7 @@ func (m *Monitor) newHeight(resp *MinuteResponse) bool {
 	return false
 }
 
+// notify all listeners of a new event
 func (m *Monitor) notify(e Event, height bool) {
 	m.listenerMtx.Lock()
 	defer m.listenerMtx.Unlock()
@@ -151,7 +175,7 @@ func (m *Monitor) notify(e Event, height bool) {
 	if height {
 		for _, l := range m.heightListeners {
 			select {
-			case l <- e.Height:
+			case l <- e.Height: // only int64
 			default:
 			}
 		}
@@ -176,6 +200,7 @@ func (m *Monitor) notifyError(err error) {
 	}
 }
 
+// FactomdRequest sends a "current-minute" API request to the configured node.
 func (m *Monitor) FactomdRequest(ctx context.Context) (*MinuteResponse, error) {
 	res := new(MinuteResponse)
 	if err := m.client.Request(ctx, m.url, "current-minute", nil, res); err != nil {
@@ -184,6 +209,8 @@ func (m *Monitor) FactomdRequest(ctx context.Context) (*MinuteResponse, error) {
 	return res, nil
 }
 
+// Stop will shut down the monitor and halt all polling.
+// A monitor that has been stopped cannot be started again.
 func (m *Monitor) Stop() {
 	m.closer.Do(func() {
 		close(m.close)
