@@ -57,9 +57,9 @@ func (ts *testServer) api(rw http.ResponseWriter, r *http.Request) {
 	if resp.Minute == 0 {
 		resp.DBHeight--
 	}
-	resp.BlockStartTime = ts.blockstart.UnixNano()
+	/*resp.BlockStartTime = ts.blockstart.UnixNano()
 	resp.MinuteStartTime = ts.blockstart.UnixNano()
-	resp.Time = time.Now().UnixNano()
+	resp.Time = time.Now().UnixNano()*/
 	resp.DBlockSeconds = int64(ts.blocktime.Seconds())
 
 	rpc := make(map[string]interface{})
