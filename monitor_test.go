@@ -44,6 +44,7 @@ func newTestServer(addr string, height, minute int64, blocktime time.Duration, t
 	ts.runner = make(chan interface{})
 
 	go ts.listen()
+	time.Sleep(time.Millisecond * 50)
 	return ts
 }
 
@@ -119,12 +120,12 @@ func (ts *testServer) tick() {
 }
 
 func TestMonitor_GetCurrentMinute(t *testing.T) {
-	s := newTestServer("localhost:9876", 10, 5, time.Second*6, t)
+	s := newTestServer("localhost:9888", 10, 5, time.Second*6, t)
 	defer s.stop()
 
-	m, err := NewMonitor("http://localhost:9876/v2")
+	m, err := NewMonitor("http://localhost:9888/v2")
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 
 	hh, mm := m.GetCurrentMinute()
@@ -136,11 +137,11 @@ func TestMonitor_GetCurrentMinute(t *testing.T) {
 
 func TestMonitor_Listeners(t *testing.T) {
 	minute := time.Second
-	s := newTestServer("localhost:9876", 0, 0, minute*10, t)
+	s := newTestServer("localhost:9888", 0, 0, minute*10, t)
 	//go s.run()
 	defer s.stop()
 
-	m, err := NewMonitor("http://localhost:9876/v2")
+	m, err := NewMonitor("http://localhost:9888/v2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +181,7 @@ func TestMonitor_Listeners(t *testing.T) {
 		}(i)
 	}
 
-	ticks := 11
+	ticks := 11 // only a single height transition
 	ticked := 0
 
 	ticker := time.NewTicker(minute)
@@ -198,7 +199,7 @@ func TestMonitor_Listeners(t *testing.T) {
 		if i < 8 && c != ticks {
 			t.Errorf("minute listener %d only has %d of %d ticks", i, c, ticks)
 		}
-		if i >= 8 && c != 2 {
+		if i >= 8 && c != 1 {
 			t.Errorf("block listener %d only has %d of %d ticks", i, c, 2)
 		}
 	}
@@ -211,16 +212,16 @@ func TestMonitor_Errors(t *testing.T) {
 	Timeout = time.Millisecond * 250
 	Interval = time.Millisecond * 250
 	minute := time.Second
-	s := newTestServer("localhost:9876", 0, 0, minute*10, t)
+	s := newTestServer("localhost:9888", 0, 0, minute*10, t)
 	go s.run()
 
-	f, err := NewMonitor("http://localhost:9876/v3")
+	f, err := NewMonitor("http://localhost:9888/v3")
 	if err == nil {
 		fmt.Printf("%+v\n", f)
 		t.Fatalf("monitor did not error on bad url")
 	}
 
-	m, err := NewMonitor("http://localhost:9876/v2")
+	m, err := NewMonitor("http://localhost:9888/v2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,10 +254,10 @@ func TestMonitor_Errors(t *testing.T) {
 }
 
 func TestMonitor_Stop(t *testing.T) {
-	s := newTestServer("localhost:9876", 0, 0, time.Second*10, t)
+	s := newTestServer("localhost:9888", 0, 0, time.Second*10, t)
 	defer s.stop()
 
-	m, err := NewMonitor("http://localhost:9876/v2")
+	m, err := NewMonitor("http://localhost:9888/v2")
 	if err != nil {
 		t.Fatal(err)
 	}
