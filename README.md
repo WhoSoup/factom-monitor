@@ -62,7 +62,15 @@ This listener returns an int64 representing the height of the most recently comp
 ```go
     listener := monitor.NewHeightListener()
     for height := range listener {
-        // process minute event
+        // process height
+    }
+```
+
+Alternatively, you can listen to just DB Heights
+```go
+    listener := monitor.NewDBHeightListener()
+    for height := range listener {
+        // process db height
     }
 ```
 
@@ -82,14 +90,17 @@ import (
 
 func main() {
 	// create a new monitor using the open node
-	monitor, err := monitor.NewMonitor("https://api.factomd.net/v2")
+	mon, err := monitor.NewMonitor("https://api.factomd.net/v2")
 	if err != nil {
 		log.Fatalf("unable to start monitor: %v", err)
 	}
 
+	height, dbheight, minute := mon.GetCurrentMinute()
+	fmt.Printf("Monitor initialized with Height=%d, DBHeight=%d, Minute=%d\n", height, dbheight, minute)
+
 	// prints out all errors
 	go func() {
-		for err := range monitor.NewErrorListener() {
+		for err := range mon.NewErrorListener() {
 			log.Printf("An error occurred: %v", err)
 		}
 	}()
@@ -97,10 +108,10 @@ func main() {
 	// only listen to new db heights
 	go func() {
 		height := int64(0)
-		for event := range monitor.NewMinuteListener() {
-			if event.DBHeight > height {
-				fmt.Printf("Height %d is saved in the database\n", event.DBHeight)
-				height = event.DBHeight
+		for h := range mon.NewDBHeightListener() {
+			if h > height {
+				fmt.Printf("Height %d is saved in the database\n", h)
+				height = h
 			}
 		}
 	}()
@@ -108,7 +119,7 @@ func main() {
 	// listen to new heights
 	go func() {
 		height := int64(0)
-		for h := range monitor.NewHeightListener() {
+		for h := range mon.NewHeightListener() {
 			if h > height {
 				fmt.Printf("The network finished block %d and is now working on block %d\n", h, h+1)
 				height = h
@@ -117,7 +128,7 @@ func main() {
 	}()
 
 	// listen to all minute events
-	for event := range monitor.NewMinuteListener() {
+	for event := range mon.NewMinuteListener() {
 		fmt.Printf("The network is working on Block %d Minute %d\n", event.Height+1, event.Minute)
 	}
 }

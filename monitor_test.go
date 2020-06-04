@@ -131,7 +131,7 @@ func TestMonitor_GetCurrentMinute(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hh, mm := m.GetCurrentMinute()
+	hh, _, mm := m.GetCurrentMinute()
 	if hh != 10 || mm != 5 {
 		t.Errorf("unexpected results. got = [%d/%d], want = [10/5]", hh, mm)
 	}

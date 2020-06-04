@@ -21,12 +21,14 @@ type Monitor struct {
 
 	heightMtx sync.Mutex
 	height    int64
+	dbheight  int64
 	minute    int64
 
-	listenerMtx     sync.Mutex
-	minuteListeners []chan Event
-	heightListeners []chan int64
-	errorListeners  []chan error
+	listenerMtx       sync.Mutex
+	minuteListeners   []chan Event
+	heightListeners   []chan int64
+	dbheightListeners []chan int64
+	errorListeners    []chan error
 
 	close  chan interface{}
 	closer sync.Once
@@ -60,6 +62,7 @@ func NewMonitor(url string) (*Monitor, error) {
 
 	m.height = response.LeaderHeight
 	m.minute = response.Minute
+	m.dbheight = response.DBHeight
 
 	m.close = make(chan interface{})
 
@@ -68,10 +71,10 @@ func NewMonitor(url string) (*Monitor, error) {
 }
 
 // GetCurrentMinute returns the most recent Height and Minute the monitor has received
-func (m *Monitor) GetCurrentMinute() (int64, int64) {
+func (m *Monitor) GetCurrentMinute() (int64, int64, int64) {
 	m.heightMtx.Lock()
 	defer m.heightMtx.Unlock()
-	return m.height, m.minute
+	return m.height, m.dbheight, m.minute
 }
 
 // NewMinuteListener spawns a new listener that receives events for every minute.
@@ -91,6 +94,16 @@ func (m *Monitor) NewHeightListener() <-chan int64 {
 	defer m.listenerMtx.Unlock()
 	l := make(chan int64, 6)
 	m.heightListeners = append(m.heightListeners, l)
+	return l
+}
+
+// NewDBHeightListener spawns a new listener that receives events every time a new DBHeight is attained.
+// Each reader must have its own listener.
+func (m *Monitor) NewDBHeightListener() <-chan int64 {
+	m.listenerMtx.Lock()
+	defer m.listenerMtx.Unlock()
+	l := make(chan int64, 6)
+	m.dbheightListeners = append(m.dbheightListeners, l)
 	return l
 }
 
@@ -151,9 +164,11 @@ func (m *Monitor) newHeight(resp *MinuteResponse) bool {
 	resp.Minute %= 10
 	if resp.LeaderHeight > m.height || (resp.LeaderHeight == m.height && resp.Minute > m.minute) {
 		newHeight := resp.LeaderHeight > m.height
+		newDBHeight := resp.DBHeight > m.dbheight
 		m.heightMtx.Lock()
 		m.height = resp.LeaderHeight
 		m.minute = resp.Minute
+		m.dbheight = resp.DBHeight
 		m.heightMtx.Unlock()
 
 		var e Event
@@ -161,14 +176,15 @@ func (m *Monitor) newHeight(resp *MinuteResponse) bool {
 		e.Height = resp.LeaderHeight
 		e.Minute = resp.Minute
 
-		m.notify(e, newHeight)
+		m.notify(e, newHeight, newDBHeight)
 		return true
 	}
+
 	return false
 }
 
 // notify all listeners of a new event
-func (m *Monitor) notify(e Event, height bool) {
+func (m *Monitor) notify(e Event, height, dbheight bool) {
 	m.listenerMtx.Lock()
 	defer m.listenerMtx.Unlock()
 
@@ -176,6 +192,15 @@ func (m *Monitor) notify(e Event, height bool) {
 		for _, l := range m.heightListeners {
 			select {
 			case l <- e.Height: // only int64
+			default:
+			}
+		}
+	}
+
+	if dbheight {
+		for _, l := range m.dbheightListeners {
+			select {
+			case l <- e.DBHeight: // only int64
 			default:
 			}
 		}
