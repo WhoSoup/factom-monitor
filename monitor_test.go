@@ -22,6 +22,7 @@ type testServer struct {
 	blocktime   time.Duration
 
 	runner chan interface{}
+	once   sync.Once
 }
 
 func newTestServer(addr string, height, minute int64, blocktime time.Duration, t *testing.T) *testServer {
@@ -44,7 +45,7 @@ func newTestServer(addr string, height, minute int64, blocktime time.Duration, t
 	ts.runner = make(chan interface{})
 
 	go ts.listen()
-	time.Sleep(time.Millisecond * 50)
+	//time.Sleep(time.Millisecond * 50)
 	return ts
 }
 
@@ -103,8 +104,10 @@ func (ts *testServer) run() {
 }
 
 func (ts *testServer) stop() {
-	ts.server.Shutdown(context.Background())
-	close(ts.runner)
+	ts.once.Do(func() {
+		ts.server.Shutdown(context.Background())
+		close(ts.runner)
+	})
 }
 
 func (ts *testServer) tick() {
@@ -209,19 +212,20 @@ func TestMonitor_Listeners(t *testing.T) {
 
 func TestMonitor_Errors(t *testing.T) {
 	o1, o2 := Timeout, Interval
-	Timeout = time.Millisecond * 250
+	Timeout = time.Second
 	Interval = time.Millisecond * 250
 	minute := time.Second
-	s := newTestServer("localhost:9888", 0, 0, minute*10, t)
+	s := newTestServer("localhost:9887", 0, 0, minute*10, t)
+	defer s.stop()
 	go s.run()
 
-	f, err := NewMonitor("http://localhost:9888/v3")
+	f, err := NewMonitor("http://localhost:9887/v3")
 	if err == nil {
 		fmt.Printf("%+v\n", f)
 		t.Fatalf("monitor did not error on bad url")
 	}
 
-	m, err := NewMonitor("http://localhost:9888/v2")
+	m, err := NewMonitor("http://localhost:9887/v2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,10 +258,10 @@ func TestMonitor_Errors(t *testing.T) {
 }
 
 func TestMonitor_Stop(t *testing.T) {
-	s := newTestServer("localhost:9888", 0, 0, time.Second*10, t)
+	s := newTestServer("localhost:9886", 0, 0, time.Second*10, t)
 	defer s.stop()
 
-	m, err := NewMonitor("http://localhost:9888/v2")
+	m, err := NewMonitor("http://localhost:9886/v2")
 	if err != nil {
 		t.Fatal(err)
 	}

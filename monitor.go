@@ -12,7 +12,7 @@ import (
 var Interval time.Duration = time.Second
 
 // Timeout specifies the maximum time an API request can take
-var Timeout time.Duration = time.Second
+var Timeout time.Duration = time.Second * 5
 
 // Monitor is responsible for polling the factom node and managing listeners
 type Monitor struct {
